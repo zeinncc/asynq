@@ -17,6 +17,9 @@ import (
 
 const statsTTL = 90 * 24 * time.Hour // 90 days
 
+const MIN int64 = -9223372036854775807
+const MAX int64 = 9223372036854775807
+
 // RDB is a client interface to query and mutate task queues.
 type RDB struct {
 	client redis.UniversalClient
@@ -25,6 +28,11 @@ type RDB struct {
 // NewRDB returns a new instance of RDB.
 func NewRDB(client redis.UniversalClient) *RDB {
 	return &RDB{client}
+}
+
+func (r *RDB) ZAdd(key, member string, score int64) error {
+	cmd := r.client.Do("zadd", key, score, member)
+	return cmd.Err()
 }
 
 // Close closes the connection with redis server.
@@ -534,6 +542,7 @@ const (
 // ARGV[4] -> cutoff timestamp (e.g., 90 days ago)
 // ARGV[5] -> max number of tasks in archive (e.g., 100)
 // ARGV[6] -> stats expiration timestamp
+// ARGV[7] -> min value -9223372036854775807, source "-inf"
 var archiveCmd = redis.NewScript(`
 if redis.call("LREM", KEYS[2], 0, ARGV[1]) == 0 then
   return redis.error_reply("NOT FOUND")
@@ -542,7 +551,7 @@ if redis.call("ZREM", KEYS[3], ARGV[1]) == 0 then
   return redis.error_reply("NOT FOUND")
 end
 redis.call("ZADD", KEYS[4], ARGV[3], ARGV[1])
-redis.call("ZREMRANGEBYSCORE", KEYS[4], "-inf", ARGV[4])
+redis.call("ZREMRANGEBYSCORE", KEYS[4], ARGV[7], ARGV[4])
 redis.call("ZREMRANGEBYRANK", KEYS[4], 0, -ARGV[5])
 redis.call("HSET", KEYS[1], "msg", ARGV[2], "state", "archived")
 local n = redis.call("INCR", KEYS[5])
@@ -584,6 +593,7 @@ func (r *RDB) Archive(msg *base.TaskMessage, errMsg string) error {
 		cutoff.Unix(),
 		maxArchiveSize,
 		expireAt.Unix(),
+		MIN,
 	}
 	return r.runScript(op, archiveCmd, keys, argv...)
 }
@@ -602,11 +612,12 @@ func (r *RDB) ForwardIfReady(qnames ...string) error {
 
 // KEYS[1] -> source queue (e.g. asynq:{<qname>:scheduled or asynq:{<qname>}:retry})
 // KEYS[2] -> asynq:{<qname>}:pending
-// ARGV[1] -> current unix time
+// ARGV[1 -> current unix time
 // ARGV[2] -> task key prefix
+// ARGV[3] -> min value -9223372036854775807, source "-inf"
 // Note: Script moves tasks up to 100 at a time to keep the runtime of script short.
 var forwardCmd = redis.NewScript(`
-local ids = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1], "LIMIT", 0, 100)
+local ids = redis.call("ZRANGEBYSCORE", KEYS[1], ARGV[3], ARGV[1], "LIMIT", 0, 100)
 for _, id in ipairs(ids) do
 	redis.call("LPUSH", KEYS[2], id)
 	redis.call("ZREM", KEYS[1], id)
@@ -617,8 +628,8 @@ return table.getn(ids)`)
 // forward moves tasks with a score less than the current unix time
 // from the src zset to the dst list. It returns the number of tasks moved.
 func (r *RDB) forward(src, dst, taskKeyPrefix string) (int, error) {
-	now := float64(time.Now().Unix())
-	res, err := forwardCmd.Run(r.client, []string{src, dst}, now, taskKeyPrefix).Result()
+	now := time.Now().Unix()
+	res, err := forwardCmd.Run(r.client, []string{src, dst}, now, taskKeyPrefix, MIN).Result()
 	if err != nil {
 		return 0, errors.E(errors.Internal, fmt.Sprintf("redis eval error: %v", err))
 	}
@@ -650,9 +661,10 @@ func (r *RDB) forwardAll(qname string) (err error) {
 // KEYS[1] -> asynq:{<qname>}:deadlines
 // ARGV[1] -> deadline in unix time
 // ARGV[2] -> task key prefix
+// ARGV[3] -> min value -9223372036854775807, source "-inf"
 var listDeadlineExceededCmd = redis.NewScript(`
 local res = {}
-local ids = redis.call("ZRANGEBYSCORE", KEYS[1], "-inf", ARGV[1])
+local ids = redis.call("ZRANGEBYSCORE", KEYS[1], ARGV[3], ARGV[1])
 for _, id in ipairs(ids) do
 	local key = ARGV[2] .. id
 	table.insert(res, redis.call("HGET", key, "msg"))
@@ -667,7 +679,8 @@ func (r *RDB) ListDeadlineExceeded(deadline time.Time, qnames ...string) ([]*bas
 	for _, qname := range qnames {
 		res, err := listDeadlineExceededCmd.Run(r.client,
 			[]string{base.DeadlinesKey(qname)},
-			deadline.Unix(), base.TaskKeyPrefix(qname)).Result()
+			deadline.Unix(), base.TaskKeyPrefix(qname),
+			MIN).Result()
 		if err != nil {
 			return nil, errors.E(op, errors.Internal, fmt.Sprintf("redis eval error: %v", err))
 		}
@@ -720,12 +733,20 @@ func (r *RDB) WriteServerState(info *base.ServerInfo, workers []*base.WorkerInfo
 	}
 	skey := base.ServerInfoKey(info.Host, info.PID, info.ServerID)
 	wkey := base.WorkersKey(info.Host, info.PID, info.ServerID)
-	if err := r.client.ZAdd(base.AllServers, &redis.Z{Score: float64(exp.Unix()), Member: skey}).Err(); err != nil {
+
+	if err := r.ZAdd(base.AllServers, skey, exp.Unix()); err != nil {
 		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
 	}
-	if err := r.client.ZAdd(base.AllWorkers, &redis.Z{Score: float64(exp.Unix()), Member: wkey}).Err(); err != nil {
+	if err := r.ZAdd(base.AllWorkers, wkey, exp.Unix()); err != nil {
 		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "zadd", Err: err})
 	}
+
+	// if err := r.client.ZAdd(base.AllServers, &redis.Z{Score: float64(exp.Unix()), Member: skey}).Err(); err != nil {
+	// 	return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "sadd", Err: err})
+	// }
+	// if err := r.client.ZAdd(base.AllWorkers, &redis.Z{Score: float64(exp.Unix()), Member: wkey}).Err(); err != nil {
+	// 	return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "zadd", Err: err})
+	// }
 	return r.runScript(op, writeServerStateCmd, []string{skey, wkey}, args...)
 }
 
@@ -774,10 +795,14 @@ func (r *RDB) WriteSchedulerEntries(schedulerID string, entries []*base.Schedule
 	}
 	exp := time.Now().Add(ttl).UTC()
 	key := base.SchedulerEntriesKey(schedulerID)
-	err := r.client.ZAdd(base.AllSchedulers, &redis.Z{Score: float64(exp.Unix()), Member: key}).Err()
-	if err != nil {
+	if err := r.ZAdd(base.AllSchedulers, key, exp.Unix()); err != nil {
 		return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "zadd", Err: err})
 	}
+
+	// err := r.client.ZAdd(base.AllSchedulers, &redis.Z{Score: float64(exp.Unix()), Member: key}).Err()
+	// if err != nil {
+	// 	return errors.E(op, errors.Unknown, &errors.RedisCommandError{Command: "zadd", Err: err})
+	// }
 	return r.runScript(op, writeSchedulerEntriesCmd, []string{key}, args...)
 }
 

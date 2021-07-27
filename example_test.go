@@ -15,9 +15,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+var password = "redis123123"
+
 func ExampleServer_Run() {
 	srv := asynq.NewServer(
-		asynq.RedisClientOpt{Addr: ":6379"},
+		asynq.RedisClientOpt{Addr: ":6379", Password: password},
 		asynq.Config{Concurrency: 20},
 	)
 
@@ -32,7 +34,7 @@ func ExampleServer_Run() {
 
 func ExampleServer_Shutdown() {
 	srv := asynq.NewServer(
-		asynq.RedisClientOpt{Addr: ":6379"},
+		asynq.RedisClientOpt{Addr: ":6379", Password: password},
 		asynq.Config{Concurrency: 20},
 	)
 
@@ -52,7 +54,7 @@ func ExampleServer_Shutdown() {
 
 func ExampleServer_Stop() {
 	srv := asynq.NewServer(
-		asynq.RedisClientOpt{Addr: ":6379"},
+		asynq.RedisClientOpt{Addr: ":6379", Password: password},
 		asynq.Config{Concurrency: 20},
 	)
 
@@ -81,7 +83,7 @@ func ExampleServer_Stop() {
 
 func ExampleScheduler() {
 	scheduler := asynq.NewScheduler(
-		asynq.RedisClientOpt{Addr: ":6379"},
+		asynq.RedisClientOpt{Addr: ":6379", Password: password},
 		&asynq.SchedulerOpts{Location: time.Local},
 	)
 

@@ -772,6 +772,7 @@ func (r *RDB) ArchiveAllScheduledTasks(qname string) (int64, error) {
 // ARGV[2] -> cutoff timestamp (e.g., 90 days ago)
 // ARGV[3] -> max number of tasks in archive (e.g., 100)
 // ARGV[4] -> task key prefix (asynq:{<qname>}:t:)
+// ARGV[5] -> min value -9223372036854775807, source "-inf"
 //
 // Output:
 // integer: Number of tasks archived
@@ -781,7 +782,7 @@ for _, id in ipairs(ids) do
 	redis.call("ZADD", KEYS[2], ARGV[1], id)
 	redis.call("HSET", ARGV[4] .. id, "state", "archived")
 end
-redis.call("ZREMRANGEBYSCORE", KEYS[2], "-inf", ARGV[2])
+redis.call("ZREMRANGEBYSCORE", KEYS[2], ARGV[5], ARGV[2])
 redis.call("ZREMRANGEBYRANK", KEYS[2], 0, -ARGV[3])
 redis.call("DEL", KEYS[1])
 return table.getn(ids)`)
@@ -804,6 +805,7 @@ func (r *RDB) ArchiveAllPendingTasks(qname string) (int64, error) {
 		now.AddDate(0, 0, -archivedExpirationInDays).Unix(),
 		maxArchiveSize,
 		base.TaskKeyPrefix(qname),
+		MIN,
 	}
 	res, err := archiveAllPendingCmd.Run(r.client, keys, argv...).Result()
 	if err != nil {
@@ -827,6 +829,7 @@ func (r *RDB) ArchiveAllPendingTasks(qname string) (int64, error) {
 // ARGV[3] -> cutoff timestamp (e.g., 90 days ago)
 // ARGV[4] -> max number of tasks in archived state (e.g., 100)
 // ARGV[5] -> queue key prefix (asynq:{<qname>}:)
+// ARGV[6] -> min value -9223372036854775807, source "-inf"
 //
 // Output:
 // Numeric code indicating the status:
@@ -857,7 +860,7 @@ else
 end
 redis.call("ZADD", KEYS[2], ARGV[2], ARGV[1])
 redis.call("HSET", KEYS[1], "state", "archived")
-redis.call("ZREMRANGEBYSCORE", KEYS[2], "-inf", ARGV[3])
+redis.call("ZREMRANGEBYSCORE", KEYS[2], ARGV[6], ARGV[3])
 redis.call("ZREMRANGEBYRANK", KEYS[2], 0, -ARGV[4])
 return 1
 `)
@@ -885,6 +888,7 @@ func (r *RDB) ArchiveTask(qname string, id uuid.UUID) error {
 		now.AddDate(0, 0, -archivedExpirationInDays).Unix(),
 		maxArchiveSize,
 		base.QueueKeyPrefix(qname),
+		MIN,
 	}
 	res, err := archiveTaskCmd.Run(r.client, keys, argv...).Result()
 	if err != nil {
@@ -921,6 +925,8 @@ func (r *RDB) ArchiveTask(qname string, id uuid.UUID) error {
 // ARGV[2] -> cutoff timestamp (e.g., 90 days ago)
 // ARGV[3] -> max number of tasks in archive (e.g., 100)
 // ARGV[4] -> task key prefix (asynq:{<qname>}:t:)
+// ARGV[5] -> qname
+// ARGV[6] -> min value -9223372036854775807, source "-inf"
 //
 // Output:
 // integer: number of tasks archived
@@ -930,7 +936,7 @@ for _, id in ipairs(ids) do
 	redis.call("ZADD", KEYS[2], ARGV[1], id)
 	redis.call("HSET", ARGV[4] .. id, "state", "archived")
 end
-redis.call("ZREMRANGEBYSCORE", KEYS[2], "-inf", ARGV[2])
+redis.call("ZREMRANGEBYSCORE", KEYS[2], ARGV[6], ARGV[2])
 redis.call("ZREMRANGEBYRANK", KEYS[2], 0, -ARGV[3])
 redis.call("DEL", KEYS[1])
 return table.getn(ids)`)
@@ -950,7 +956,9 @@ func (r *RDB) archiveAll(src, dst, qname string) (int64, error) {
 		maxArchiveSize,
 		base.TaskKeyPrefix(qname),
 		qname,
+		MIN,
 	}
+
 	res, err := archiveAllCmd.Run(r.client, keys, argv...).Result()
 	if err != nil {
 		return 0, err
@@ -1327,16 +1335,18 @@ func (r *RDB) RemoveQueue(qname string, force bool) error {
 }
 
 // Note: Script also removes stale keys.
+// ARGV[2] -> min value -9223372036854775807, source "-inf"
+// ARGV[3] -> max value 9223372036854775807, source "+inf"
 var listServerKeysCmd = redis.NewScript(`
 local now = tonumber(ARGV[1])
-local keys = redis.call("ZRANGEBYSCORE", KEYS[1], now, "+inf")
-redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", now-1)
+local keys = redis.call("ZRANGEBYSCORE", KEYS[1], now, ARGV[3])
+redis.call("ZREMRANGEBYSCORE", KEYS[1], ARGV[2], now-1)
 return keys`)
 
 // ListServers returns the list of server info.
 func (r *RDB) ListServers() ([]*base.ServerInfo, error) {
 	now := time.Now()
-	res, err := listServerKeysCmd.Run(r.client, []string{base.AllServers}, now.Unix()).Result()
+	res, err := listServerKeysCmd.Run(r.client, []string{base.AllServers}, now.Unix(), MIN, MAX).Result()
 	if err != nil {
 		return nil, err
 	}
@@ -1360,17 +1370,19 @@ func (r *RDB) ListServers() ([]*base.ServerInfo, error) {
 }
 
 // Note: Script also removes stale keys.
+// ARGV[2] -> min value -9223372036854775807, source "-inf"
+// ARGV[3] -> max value 9223372036854775807, source "+inf"
 var listWorkersCmd = redis.NewScript(`
 local now = tonumber(ARGV[1])
-local keys = redis.call("ZRANGEBYSCORE", KEYS[1], now, "+inf")
-redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", now-1)
+local keys = redis.call("ZRANGEBYSCORE", KEYS[1], now, ARGV[3])
+redis.call("ZREMRANGEBYSCORE", KEYS[1], ARGV[2], now-1)
 return keys`)
 
 // ListWorkers returns the list of worker stats.
 func (r *RDB) ListWorkers() ([]*base.WorkerInfo, error) {
 	var op errors.Op = "rdb.ListWorkers"
 	now := time.Now()
-	res, err := listWorkersCmd.Run(r.client, []string{base.AllWorkers}, now.Unix()).Result()
+	res, err := listWorkersCmd.Run(r.client, []string{base.AllWorkers}, now.Unix(), MIN, MAX).Result()
 	if err != nil {
 		return nil, errors.E(op, errors.Unknown, err)
 	}
@@ -1396,16 +1408,18 @@ func (r *RDB) ListWorkers() ([]*base.WorkerInfo, error) {
 }
 
 // Note: Script also removes stale keys.
+// ARGV[2] -> min value -9223372036854775807, source "-inf"
+// ARGV[3] -> max value 9223372036854775807, source "+inf"
 var listSchedulerKeysCmd = redis.NewScript(`
 local now = tonumber(ARGV[1])
-local keys = redis.call("ZRANGEBYSCORE", KEYS[1], now, "+inf")
-redis.call("ZREMRANGEBYSCORE", KEYS[1], "-inf", now-1)
+local keys = redis.call("ZRANGEBYSCORE", KEYS[1], now, ARGV[3])
+redis.call("ZREMRANGEBYSCORE", KEYS[1], ARGV[2], now-1)
 return keys`)
 
 // ListSchedulerEntries returns the list of scheduler entries.
 func (r *RDB) ListSchedulerEntries() ([]*base.SchedulerEntry, error) {
 	now := time.Now()
-	res, err := listSchedulerKeysCmd.Run(r.client, []string{base.AllSchedulers}, now.Unix()).Result()
+	res, err := listSchedulerKeysCmd.Run(r.client, []string{base.AllSchedulers}, now.Unix(), MIN, MAX).Result()
 	if err != nil {
 		return nil, err
 	}

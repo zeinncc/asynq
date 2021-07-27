@@ -17,6 +17,7 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/google/uuid"
 	"github.com/hibiken/asynq/internal/base"
+	"github.com/hibiken/asynq/internal/rdb"
 )
 
 // EquateInt64Approx returns a Comparer option that treats int64 values
@@ -432,7 +433,8 @@ func getMessagesFromZSet(tb testing.TB, r redis.UniversalClient, qname string,
 func getMessagesFromZSetWithScores(tb testing.TB, r redis.UniversalClient,
 	qname string, keyFn func(qname string) string, state base.TaskState) []base.Z {
 	tb.Helper()
-	zs := r.ZRangeWithScores(keyFn(qname), 0, -1).Val()
+	zs := rdb.ZRangeWithScores(r,keyFn(qname), 0, -1).Val()
+	// zs := r.ZRangeWithScores(keyFn(qname), 0, -1).Val()
 	var res []base.Z
 	for _, z := range zs {
 		taskID := z.Member.(string)

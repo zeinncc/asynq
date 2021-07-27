@@ -899,7 +899,8 @@ func TestSchedule(t *testing.T) {
 
 		// Check Scheduled zset has task ID.
 		scheduledKey := base.ScheduledKey(tc.msg.Queue)
-		zs := r.client.ZRangeWithScores(scheduledKey, 0, -1).Val()
+		// zs := r.client.ZRangeWithScores(scheduledKey, 0, -1).Val()
+		zs := ZRangeWithScores(r.client, scheduledKey, 0, -1).Val()
 		if n := len(zs); n != 1 {
 			t.Errorf("Redis ZSET %q contains %d elements, want 1",
 				scheduledKey, n)
@@ -976,7 +977,8 @@ func TestScheduleUnique(t *testing.T) {
 
 		// Check Scheduled zset has task ID.
 		scheduledKey := base.ScheduledKey(tc.msg.Queue)
-		zs := r.client.ZRangeWithScores(scheduledKey, 0, -1).Val()
+		// zs := r.client.ZRangeWithScores(scheduledKey, 0, -1).Val()
+		zs := ZRangeWithScores(r.client, scheduledKey, 0, -1).Val()
 		if n := len(zs); n != 1 {
 			t.Errorf("Redis ZSET %q contains %d elements, want 1",
 				scheduledKey, n)

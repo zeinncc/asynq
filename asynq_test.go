@@ -16,14 +16,15 @@ import (
 	"github.com/hibiken/asynq/internal/log"
 )
 
-//============================================================================
+// ============================================================================
 // This file defines helper functions and variables used in other test files.
-//============================================================================
+// ============================================================================
 
 // variables used for package testing.
 var (
 	redisAddr string
 	redisDB   int
+	redisPass string
 
 	useRedisCluster   bool
 	redisClusterAddrs string // comma-separated list of host:port
@@ -34,8 +35,9 @@ var (
 var testLogger *log.Logger
 
 func init() {
-	flag.StringVar(&redisAddr, "redis_addr", "localhost:6379", "redis address to use in testing")
+	flag.StringVar(&redisAddr, "redis_addr", "192.168.8.183:6379", "redis address to use in testing")
 	flag.IntVar(&redisDB, "redis_db", 14, "redis db number to use in testing")
+	flag.StringVar(&redisPass, "redis_pass", "redis123123", "redis password to use in testing")
 	flag.BoolVar(&useRedisCluster, "redis_cluster", false, "use redis cluster as a broker in testing")
 	flag.StringVar(&redisClusterAddrs, "redis_cluster_addrs", "localhost:7000,localhost:7001,localhost:7002", "comma separated list of redis server addresses")
 	flag.Var(&testLogLevel, "loglevel", "log level to use in testing")
@@ -56,8 +58,9 @@ func setup(tb testing.TB) (r redis.UniversalClient) {
 		})
 	} else {
 		r = redis.NewClient(&redis.Options{
-			Addr: redisAddr,
-			DB:   redisDB,
+			Addr:     redisAddr,
+			DB:       redisDB,
+			Password: redisPass,
 		})
 	}
 	// Start each test with a clean slate.
@@ -73,12 +76,14 @@ func getRedisConnOpt(tb testing.TB) RedisConnOpt {
 			tb.Fatal("No redis cluster addresses provided. Please set addresses using --redis_cluster_addrs flag.")
 		}
 		return RedisClusterClientOpt{
-			Addrs: addrs,
+			Addrs:    addrs,
+			Password: redisPass,
 		}
 	}
 	return RedisClientOpt{
-		Addr: redisAddr,
-		DB:   redisDB,
+		Addr:     redisAddr,
+		DB:       redisDB,
+		Password: redisPass,
 	}
 }
 

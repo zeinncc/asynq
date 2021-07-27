@@ -372,7 +372,8 @@ func ZAddTaskUnique(c redis.UniversalClient, key string, msg *base.TaskMessage, 
 }
 
 func updateZSetMessages(c redis.UniversalClient, key, state string) {
-	zs, err := c.ZRangeWithScores(backupKey(key), 0, -1).Result()
+	// zs, err := c.ZRangeWithScores(backupKey(key), 0, -1).Result()
+	zs, err := rdb.ZRangeWithScores(c, backupKey(key), 0, -1).Result()
 	failIfError(err, "Failed to read")
 
 	for _, z := range zs {
